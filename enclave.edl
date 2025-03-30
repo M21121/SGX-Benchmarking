@@ -1,0 +1,18 @@
+/* enclave.edl */
+enclave {
+    include "stdio.h"  /* For printf */
+
+    trusted {
+        public void empty_ecall(int n);
+        public uint64_t measure_enclave_time(int n);
+        public uint64_t file_read_ecall([in, string] const char* filename);
+        public uint64_t repeated_file_read_ecall([in, string] const char* filename, int iterations);
+    };
+
+    untrusted {
+        void empty_ocall();
+        void ocall_print_string([in, string] const char* str);
+        uint64_t ocall_get_app_cycles();
+        size_t ocall_read_file([in, string] const char* filename, [out, size=buf_len] char* buf, size_t buf_len);
+    };
+};

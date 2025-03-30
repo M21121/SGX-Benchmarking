@@ -1,0 +1,76 @@
+# SGX specific files
+*.so
+*.signed.so
+enclave_t.*
+enclave_u.*
+
+# Build artifacts
+*.o
+*.a
+*.lo
+*.la
+*.out
+*.exe
+
+# Generated files
+*.txt
+*.pem
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Editor/IDE specific files
+.vscode/
+.idea/
+*.sublime-*
+
+# Backup files
+*.bak
+*.backup
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# SGX specific directories
+.config_HW_PRERELEASE_x64
+.config_HW_DEBUG_x64
+.config_SIM_DEBUG_x64
+.config_SIM_RELEASE_x64
+
+# Log files
+*.log
+
+# Shell script generated files
+*.tmp
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
