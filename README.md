@@ -1,1 +1,1 @@
-![Results](results.png)
+![Results](Results.png)
