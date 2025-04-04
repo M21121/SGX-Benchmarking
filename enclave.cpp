@@ -1,6 +1,5 @@
 #include <stdint.h>
 #include <string.h>
-#include <x86intrin.h> // For __rdtsc()
 #include "sgx_trts.h"
 #include "enclave_t.h"
 
@@ -44,11 +43,8 @@ namespace {
     }
 }
 
-/* Empty ECALL with side-channel mitigations and timing */
+/* Empty ECALL with side-channel mitigations */
 void empty_ecall(int n) {
-    // Get timestamp immediately upon entering the enclave
-    uint64_t enclave_entry_time = __rdtsc();
-
     /* Prevent speculative execution before processing input */
     prevent_speculative_execution();
 
@@ -74,72 +70,37 @@ void empty_ecall(int n) {
     /* Memory fence before calling OCALL */
     __asm__ volatile ("mfence" ::: "memory");
 
-    // Get timestamp before exiting the enclave
-    uint64_t enclave_exit_time = __rdtsc();
-    uint64_t enclave_cycles = enclave_exit_time - enclave_entry_time;
+    // Report the operation
+    ocall_print_string("Empty ECALL executed\n");
 
-    // Report the time spent inside the enclave
-    char buffer[100];
-    snprintf(buffer, sizeof(buffer), "Pure enclave execution took %lu CPU cycles\n", enclave_cycles);
-    ocall_print_string(buffer);
-
-    // Pass the timing information back to the app
+    // Pass the information back to the app
     empty_ocall();
 
     /* Final memory fence */
     __asm__ volatile ("mfence" ::: "memory");
 }
 
-uint64_t measure_enclave_time(int n) {
-    // Get app timestamp via OCALL
-    uint64_t app_entry_cycles;
-    ocall_get_app_cycles(&app_entry_cycles);
-
-    // Get enclave entry timestamp
-    uint64_t enclave_entry_cycles = __rdtsc();
-
-    // Calculate entry context switch time
-    uint64_t entry_context_switch = enclave_entry_cycles - app_entry_cycles;
-
-    // Do some work (same as in empty_ecall)
+/* ECALL that triggers an OCALL (ping) */
+void ping_ecall(int iteration_number) {
+    /* Prevent speculative execution before processing input */
     prevent_speculative_execution();
-    uint32_t result = 0;
-    for (int i = 0; i < 10; i++) {
-        uint32_t should_add = constant_time_select(i < n, 1, 0);
-        result += should_add * i;
-        prevent_speculative_execution();
-    }
 
-    // Get enclave exit timestamp
-    uint64_t enclave_exit_cycles = __rdtsc();
+    // Report the current iteration
+    char log_buffer[256];
+    snprintf(log_buffer, sizeof(log_buffer),
+             "ECALL ping received (iteration %d)\n",
+             iteration_number);
+    ocall_print_string(log_buffer);
 
-    // Get app timestamp via OCALL
-    uint64_t app_exit_cycles;
-    ocall_get_app_cycles(&app_exit_cycles);
+    // Call the OCALL to continue the ping-pong
+    pong_ocall(iteration_number);
 
-    // Calculate exit context switch time
-    uint64_t exit_context_switch = app_exit_cycles - enclave_exit_cycles;
-
-    // Calculate pure enclave execution time
-    uint64_t enclave_execution = enclave_exit_cycles - enclave_entry_cycles;
-
-    // Report the measurements
-    char buffer[256];
-    snprintf(buffer, sizeof(buffer), 
-             "Context switch times: Entry=%lu cycles, Exit=%lu cycles\n"
-             "Pure enclave execution: %lu cycles\n",
-             entry_context_switch, exit_context_switch, enclave_execution);
-    ocall_print_string(buffer);
-
-    // Return pure enclave execution time
-    return enclave_execution;
+    /* Final memory fence */
+    __asm__ volatile ("mfence" ::: "memory");
 }
 
-/* ECALL that only reads in a file */
-uint64_t file_read_ecall(const char* filename) {
-    // Get timestamp immediately upon entering the enclave
-    uint64_t enclave_entry_time = __rdtsc();
-
+/* ECALL that reads in a file */
+void file_read_ecall(const char* filename) {
     /* Prevent speculative execution before processing input */
     prevent_speculative_execution();
 
@@ -152,7 +113,7 @@ uint64_t file_read_ecall(const char* filename) {
 
     if (status != SGX_SUCCESS) {
         ocall_print_string("Error: Failed to execute ocall_read_file\n");
-        return 0;
+        return;
     }
 
     // Process the data in a constant-time manner
@@ -165,82 +126,14 @@ uint64_t file_read_ecall(const char* filename) {
     // Securely clear the buffer
     secure_memzero(buffer, sizeof(buffer));
 
-    // Get timestamp before exiting the enclave
-    uint64_t enclave_exit_time = __rdtsc();
-    uint64_t enclave_cycles = enclave_exit_time - enclave_entry_time;
-
-    // Report the time spent inside the enclave
+    // Report the operation
     char log_buffer[256];
-    snprintf(log_buffer, sizeof(log_buffer), 
-             "File read enclave execution took %lu CPU cycles\n"
-             "Read %zu bytes, checksum: %u\n", 
-             enclave_cycles, bytes_read, checksum);
+    snprintf(log_buffer, sizeof(log_buffer),
+             "File read completed\n"
+             "Read %zu bytes, checksum: %u\n",
+             bytes_read, checksum);
     ocall_print_string(log_buffer);
 
     /* Final memory fence */
     __asm__ volatile ("mfence" ::: "memory");
-
-    return enclave_cycles;
-}
-
-/* ECALL that reads a file multiple times */
-uint64_t repeated_file_read_ecall(const char* filename, int iterations) {
-    // Get timestamp immediately upon entering the enclave
-    uint64_t enclave_entry_time = __rdtsc();
-
-    /* Prevent speculative execution before processing input */
-    prevent_speculative_execution();
-
-    // Buffer to store file contents
-    char buffer[4096] = {0};
-    size_t total_bytes_read = 0;
-    uint32_t total_checksum = 0;
-
-    // Validate iterations to prevent potential side-channel
-    if (iterations <= 0 || iterations > 1000) {
-        iterations = 1; // Default to 1 if invalid
-    }
-
-    // Read file multiple times
-    for (int i = 0; i < iterations; i++) {
-        size_t bytes_read = 0;
-
-        // Read file via OCALL
-        sgx_status_t status = ocall_read_file(&bytes_read, filename, buffer, sizeof(buffer));
-
-        if (status != SGX_SUCCESS) {
-            ocall_print_string("Error: Failed to execute ocall_read_file\n");
-            return 0;
-        }
-
-        // Process the data in a constant-time manner
-        uint32_t checksum = 0;
-        for (size_t j = 0; j < bytes_read; j++) {
-            checksum += (unsigned char)buffer[j];
-            prevent_speculative_execution();
-        }
-
-        total_bytes_read += bytes_read;
-        total_checksum += checksum;
-
-        // Securely clear the buffer
-        secure_memzero(buffer, sizeof(buffer));
-    }
-
-    // Get timestamp before exiting the enclave
-    uint64_t enclave_exit_time = __rdtsc();
-    uint64_t enclave_cycles = enclave_exit_time - enclave_entry_time;
-
-    // Report the time spent inside the enclave
-    char log_buffer[256];
-    snprintf(log_buffer, sizeof(log_buffer), 
-             "Repeated file read enclave execution took %lu CPU cycles\n"
-             "Read %zu bytes total, checksum: %u, iterations: %d\n", 
-             enclave_cycles, total_bytes_read, total_checksum, iterations);
-    ocall_print_string(log_buffer);
-
-    /* Final memory fence */
-    __asm__ volatile ("mfence" ::: "memory");
-
-    return enclave_cycles;
 }

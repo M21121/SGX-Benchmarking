@@ -10,30 +10,12 @@
 #include <sys/sysinfo.h>
 #include <iostream>
 #include <stdexcept>
-#include <chrono> // Add timing functionality
-#include <vector> // For storing timing measurements
 #include <fstream>
-#include <x86intrin.h> // For __rdtsc()
+#include <vector>
+#include <getopt.h>
 
 #include "sgx_urts.h"
 #include "enclave_u.h"
-
-
-#include "sgx_urts.h"
-#include "enclave_u.h"
-
-struct TimingData {
-    uint64_t app_start_cycles;
-    uint64_t app_end_cycles;
-    uint64_t enclave_cycles;
-    double app_start_ms;
-    double app_end_ms;
-};
-
-uint64_t ocall_get_app_cycles() {
-    return __rdtsc();
-}
-
 
 /* Global EID shared by multiple threads */
 sgx_enclave_id_t global_eid = 0;
@@ -99,10 +81,6 @@ int initialize_enclave() {
 void set_security_attributes() {
     std::cout << "Setting security attributes..." << std::endl;
 
-    /* Flush CPU caches to mitigate cache-based side channels */
-    // Commented out as this requires privileges and might cause issues
-    // __asm__ volatile ("wbinvd" ::: "memory");
-
     /* Memory barrier to prevent instruction reordering */
     __asm__ volatile ("mfence" ::: "memory");
 
@@ -132,7 +110,7 @@ std::vector<int> get_physical_cores() {
 
     // More accurate approach (Linux-specific)
     for (int i = 0; i < num_cores; i++) {
-        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(i) + 
+        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(i) +
                           "/topology/thread_siblings_list";
         std::ifstream file(path);
         if (file.is_open()) {
@@ -168,70 +146,6 @@ void pin_to_physical_core() {
     }
 }
 
-void ocall_get_app_cycles(uint64_t* cycles) {
-    if (cycles) {
-        *cycles = __rdtsc();
-    }
-}
-
-void measure_context_switch_time(int iterations) {
-    std::cout << "\nMeasuring context switch time..." << std::endl;
-    std::vector<uint64_t> context_switch_cycles;
-
-    for (int i = 0; i < iterations; i++) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        uint64_t enclave_cycles = 0;
-        sgx_status_t ret = measure_enclave_time(global_eid, &enclave_cycles, 42);
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> duration = end_time - start_time;
-
-        if (ret != SGX_SUCCESS) {
-            std::cerr << "Failed to call measure_enclave_time (Error code: 0x" 
-                      << std::hex << ret << ")" << std::endl;
-            return;
-        }
-
-        // Calculate app-measured total time
-        uint64_t app_cycles = duration.count() * 3.0e6; // Approximate conversion from ms to cycles
-
-        // Context switch overhead is the difference
-        uint64_t switch_cycles = app_cycles - enclave_cycles;
-
-        context_switch_cycles.push_back(switch_cycles);
-        std::cout << "Iteration " << (i+1) << ": " << std::endl;
-        std::cout << "  Total time: " << duration.count() << " ms" << std::endl;
-        std::cout << "  Enclave time: " << (enclave_cycles / 3.0e6) << " ms" << std::endl;
-        std::cout << "  Context switch overhead: " << (switch_cycles / 3.0e6) << " ms" << std::endl;
-
-        // Sleep briefly between iterations
-        usleep(1000);
-    }
-
-    // Calculate and display context switch statistics
-    uint64_t total_switch_cycles = 0;
-    uint64_t min_switch_cycles = context_switch_cycles[0];
-    uint64_t max_switch_cycles = context_switch_cycles[0];
-
-    for (uint64_t cycles : context_switch_cycles) {
-        total_switch_cycles += cycles;
-        min_switch_cycles = std::min(min_switch_cycles, cycles);
-        max_switch_cycles = std::max(max_switch_cycles, cycles);
-    }
-
-    double avg_switch_cycles = static_cast<double>(total_switch_cycles) / iterations;
-
-    std::cout << "\nContext Switch Results:" << std::endl;
-    std::cout << "  Average context switch cycles: " << avg_switch_cycles << std::endl;
-    std::cout << "  Minimum context switch cycles: " << min_switch_cycles << std::endl;
-    std::cout << "  Maximum context switch cycles: " << max_switch_cycles << std::endl;
-
-    // Calculate approximate time in milliseconds (assuming ~3 GHz processor)
-    const double CYCLES_PER_MS = 3.0e6; // 3 million cycles per millisecond at 3 GHz
-    std::cout << "  Approximate context switch time: " << (avg_switch_cycles / CYCLES_PER_MS) << " ms" << std::endl;
-}
-
 size_t ocall_read_file(const char* filename, char* buf, size_t buf_len) {
     size_t bytes_read = 0;
 
@@ -247,6 +161,57 @@ size_t ocall_read_file(const char* filename, char* buf, size_t buf_len) {
     return bytes_read;
 }
 
+void pong_ocall(int iteration_number) {
+    std::cout << "OCALL pong received (iteration " << iteration_number << ")" << std::endl;
+}
+
+void test_init_only() {
+    std::cout << "\nTesting enclave initialization only (control test)" << std::endl;
+    std::cout << "Enclave was initialized successfully and will now be destroyed" << std::endl;
+    // No operations performed - this is just a control test
+}
+
+void test_ping_pong(int iterations) {
+    std::cout << "\nTesting ping-pong between ECALL and OCALL for " << iterations << " iterations..." << std::endl;
+
+    for (int i = 1; i <= iterations; i++) {
+        // Start the ping-pong with an ECALL
+        sgx_status_t ret = ping_ecall(global_eid, i);
+
+        if (ret != SGX_SUCCESS) {
+            std::cerr << "Failed in ping_ecall (Error code: 0x" << std::hex << ret << ")" << std::endl;
+            return;
+        }
+    }
+
+    std::cout << "Completed ping-pong test with " << iterations << " iterations" << std::endl;
+}
+
+void test_empty_ecall(int iterations) {
+    std::cout << "\nTesting empty_ecall for " << iterations << " iterations..." << std::endl;
+
+    for (int i = 0; i < iterations; i++) {
+        sgx_status_t ret = empty_ecall(global_eid, i % 50); // Vary the parameter slightly
+
+        if (ret != SGX_SUCCESS) {
+            std::cerr << "Failed in empty_ecall test (Error code: 0x" << std::hex << ret << ")" << std::endl;
+            return;
+        }
+    }
+
+    std::cout << "Completed " << iterations << " empty_ecall operations" << std::endl;
+}
+
+void test_empty_ocall(int iterations) {
+    std::cout << "\nTesting empty_ocall for " << iterations << " iterations..." << std::endl;
+
+    for (int i = 0; i < iterations; i++) {
+        empty_ocall();
+    }
+
+    std::cout << "Completed " << iterations << " empty_ocall operations" << std::endl;
+}
+
 void test_file_read_ecall(const char* filename, int iterations) {
     // First check if the file exists
     FILE* test_file = fopen(filename, "r");
@@ -256,184 +221,96 @@ void test_file_read_ecall(const char* filename, int iterations) {
     }
     fclose(test_file);
 
-    std::cout << "\nTesting file read ECALL with file: " << filename << std::endl;
-    std::vector<uint64_t> file_read_cycles;
-    std::vector<double> file_read_times;
+    std::cout << "\nTesting file_read_ecall with file: " << filename << std::endl;
+    std::cout << "Performing " << iterations << " iterations" << std::endl;
 
     for (int i = 0; i < iterations; i++) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        uint64_t enclave_cycles = 0;
-        sgx_status_t ret = file_read_ecall(global_eid, &enclave_cycles, filename);
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> duration = end_time - start_time;
+        sgx_status_t ret = file_read_ecall(global_eid, filename);
 
         if (ret != SGX_SUCCESS) {
-            std::cerr << "Failed to call file_read_ecall (Error code: 0x" 
+            std::cerr << "Failed to call file_read_ecall (Error code: 0x"
                       << std::hex << ret << ")" << std::endl;
             return;
         }
-
-        file_read_cycles.push_back(enclave_cycles);
-        file_read_times.push_back(duration.count());
-
-        std::cout << "Iteration " << (i+1) << ":" << std::endl;
-        std::cout << "  Total time: " << duration.count() << " ms" << std::endl;
-        std::cout << "  Enclave cycles: " << enclave_cycles << std::endl;
-
-        // Sleep briefly between iterations
-        usleep(1000);
     }
 
-    // Calculate statistics
-    double total_time_sum = 0.0;
-    uint64_t total_cycles_sum = 0;
-    double min_time = file_read_times[0];
-    double max_time = file_read_times[0];
-    uint64_t min_cycles = file_read_cycles[0];
-    uint64_t max_cycles = file_read_cycles[0];
-
-    for (int i = 0; i < iterations; i++) {
-        total_time_sum += file_read_times[i];
-        total_cycles_sum += file_read_cycles[i];
-        min_time = std::min(min_time, file_read_times[i]);
-        max_time = std::max(max_time, file_read_times[i]);
-        min_cycles = std::min(min_cycles, file_read_cycles[i]);
-        max_cycles = std::max(max_cycles, file_read_cycles[i]);
-    }
-
-    double avg_time = total_time_sum / iterations;
-    double avg_cycles = static_cast<double>(total_cycles_sum) / iterations;
-
-    std::cout << "\nFile Read ECALL Results:" << std::endl;
-    std::cout << "  Average execution time: " << avg_time << " ms" << std::endl;
-    std::cout << "  Minimum execution time: " << min_time << " ms" << std::endl;
-    std::cout << "  Maximum execution time: " << max_time << " ms" << std::endl;
-    std::cout << "  Average enclave cycles: " << avg_cycles << std::endl;
-    std::cout << "  Minimum enclave cycles: " << min_cycles << std::endl;
-    std::cout << "  Maximum enclave cycles: " << max_cycles << std::endl;
-
-    // Compare with empty ecall
-    std::cout << "\nComparing with empty ECALL:" << std::endl;
-
-    // Run empty ecall for comparison
-    std::vector<double> empty_times;
-    std::vector<uint64_t> empty_cycles;
-
-    for (int i = 0; i < iterations; i++) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        sgx_status_t ret = empty_ecall(global_eid, 42);
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> duration = end_time - start_time;
-
-        if (ret != SGX_SUCCESS) {
-            std::cerr << "Failed to call empty_ecall (Error code: 0x" 
-                      << std::hex << ret << ")" << std::endl;
-            return;
-        }
-
-        empty_times.push_back(duration.count());
-
-        // Sleep briefly between iterations
-        usleep(1000);
-    }
-
-    // Calculate empty ecall statistics
-    double empty_time_sum = 0.0;
-    for (double time : empty_times) {
-        empty_time_sum += time;
-    }
-    double avg_empty_time = empty_time_sum / iterations;
-
-    // Calculate overhead
-    double overhead_time = avg_time - avg_empty_time;
-    double overhead_percentage = (overhead_time / avg_empty_time) * 100.0;
-
-    std::cout << "  Average empty ECALL time: " << avg_empty_time << " ms" << std::endl;
-    std::cout << "  File read overhead: " << overhead_time << " ms (" 
-              << overhead_percentage << "% increase)" << std::endl;
+    std::cout << "Completed " << iterations << " file_read_ecall operations" << std::endl;
 }
 
-void test_repeated_file_read_ecall(const char* filename, int iterations_per_call, int num_calls) {
-    // First check if the file exists
-    FILE* test_file = fopen(filename, "r");
-    if (!test_file) {
-        std::cerr << "Error: File '" << filename << "' does not exist. Please create it before running this test." << std::endl;
-        return;
-    }
-    fclose(test_file);
 
-    std::cout << "\nTesting repeated file read ECALL with file: " << filename << std::endl;
-    std::cout << "Performing " << iterations_per_call << " reads per ECALL, " << num_calls << " calls" << std::endl;
-
-    std::vector<uint64_t> file_read_cycles;
-    std::vector<double> file_read_times;
-
-    for (int i = 0; i < num_calls; i++) {
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        uint64_t enclave_cycles = 0;
-        sgx_status_t ret = repeated_file_read_ecall(global_eid, &enclave_cycles, filename, iterations_per_call);
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> duration = end_time - start_time;
-
-        if (ret != SGX_SUCCESS) {
-            std::cerr << "Failed to call repeated_file_read_ecall (Error code: 0x" 
-                      << std::hex << ret << ")" << std::endl;
-            return;
-        }
-
-        file_read_cycles.push_back(enclave_cycles);
-        file_read_times.push_back(duration.count());
-
-        std::cout << "Call " << (i+1) << ":" << std::endl;
-        std::cout << "  Total time: " << duration.count() << " ms" << std::endl;
-        std::cout << "  Enclave cycles: " << enclave_cycles << std::endl;
-        std::cout << "  Average time per read: " << (duration.count() / iterations_per_call) << " ms" << std::endl;
-
-        // Sleep briefly between iterations
-        usleep(1000);
-    }
-
-    // Calculate statistics
-    double total_time_sum = 0.0;
-    uint64_t total_cycles_sum = 0;
-    double min_time = file_read_times[0];
-    double max_time = file_read_times[0];
-    uint64_t min_cycles = file_read_cycles[0];
-    uint64_t max_cycles = file_read_cycles[0];
-
-    for (int i = 0; i < num_calls; i++) {
-        total_time_sum += file_read_times[i];
-        total_cycles_sum += file_read_cycles[i];
-        min_time = std::min(min_time, file_read_times[i]);
-        max_time = std::max(max_time, file_read_times[i]);
-        min_cycles = std::min(min_cycles, file_read_cycles[i]);
-        max_cycles = std::max(max_cycles, file_read_cycles[i]);
-    }
-
-    double avg_time = total_time_sum / num_calls;
-    double avg_cycles = static_cast<double>(total_cycles_sum) / num_calls;
-    double avg_time_per_read = avg_time / iterations_per_call;
-    double avg_cycles_per_read = avg_cycles / iterations_per_call;
-
-    std::cout << "\nRepeated File Read ECALL Results:" << std::endl;
-    std::cout << "  Average execution time per call: " << avg_time << " ms" << std::endl;
-    std::cout << "  Minimum execution time per call: " << min_time << " ms" << std::endl;
-    std::cout << "  Maximum execution time per call: " << max_time << " ms" << std::endl;
-    std::cout << "  Average enclave cycles per call: " << avg_cycles << std::endl;
-    std::cout << "  Average time per individual read: " << avg_time_per_read << " ms" << std::endl;
-    std::cout << "  Average cycles per individual read: " << avg_cycles_per_read << std::endl;
+void print_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [options]" << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  -h, --help                 Show this help message" << std::endl;
+    std::cout << "  -t, --test TYPE            Test type (init, ecall, ocall, fileread, pingpong)" << std::endl;
+    std::cout << "  -i, --iterations N         Number of iterations to run (default: 1)" << std::endl;
+    std::cout << "  -f, --file FILENAME        File to use for file operations (default: test_file.txt)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Examples:" << std::endl;
+    std::cout << "  " << program_name << " --test init                # Just initialize enclave and exit (control test)" << std::endl;
+    std::cout << "  " << program_name << " --test ecall --iterations 1000" << std::endl;
+    std::cout << "  " << program_name << " --test fileread --file data.txt --iterations 10" << std::endl;
+    std::cout << "  " << program_name << " --test pingpong --iterations 10" << std::endl;
 }
-
 
 
 int main(int argc, char* argv[]) {
     try {
+        // Default values
+        std::string test_type = "";
+        int iterations = 1;
+        std::string filename = "test_file.txt";
+        int reads_per_call = 100;
+
+        // Define command line options
+        static struct option long_options[] = {
+            {"help",           no_argument,       0, 'h'},
+            {"test",           required_argument, 0, 't'},
+            {"iterations",     required_argument, 0, 'i'},
+            {"file",           required_argument, 0, 'f'},
+            {0, 0, 0, 0}
+        };
+
+        // Parse command line arguments
+        int opt;
+        int option_index = 0;
+        while ((opt = getopt_long(argc, argv, "ht:i:f:", long_options, &option_index)) != -1) {
+            switch (opt) {
+                case 'h':
+                    print_usage(argv[0]);
+                    return 0;
+                case 't':
+                    test_type = optarg;
+                    break;
+                case 'i':
+                    iterations = std::stoi(optarg);
+                    break;
+                case 'f':
+                    filename = optarg;
+                    break;
+                default:
+                    print_usage(argv[0]);
+                    return 1;
+            }
+        }
+
+        // Validate arguments
+        if (test_type.empty()) {
+            std::cerr << "Error: Test type must be specified" << std::endl;
+            print_usage(argv[0]);
+            return 1;
+        }
+
+        if (iterations <= 0) {
+            std::cerr << "Error: Iterations must be a positive number" << std::endl;
+            return 1;
+        }
+
+        if (reads_per_call <= 0) {
+            std::cerr << "Error: Reads per call must be a positive number" << std::endl;
+            return 1;
+        }
+
         std::cout << "Starting SGX application..." << std::endl;
 
         pin_to_physical_core();
@@ -447,94 +324,23 @@ int main(int argc, char* argv[]) {
             return -1;
         }
 
-        /* Perform empty ECALL with timing */
-        const int NUM_ITERATIONS = 10; // Number of iterations to measure
-        std::vector<double> total_times;
-        std::vector<double> context_switch_times;
-        std::vector<double> enclave_times;
-
-        std::cout << "Running empty_ecall for " << NUM_ITERATIONS << " iterations..." << std::endl;
-
-        for (int i = 0; i < NUM_ITERATIONS; i++) {
-            // Measure total time (including context switch)
-            auto start_time = std::chrono::high_resolution_clock::now();
-            uint64_t start_cycles = __rdtsc();
-
-            sgx_status_t ret = empty_ecall(global_eid, 42);
-
-            uint64_t end_cycles = __rdtsc();
-            auto end_time = std::chrono::high_resolution_clock::now();
-
-            if (ret != SGX_SUCCESS) {
-                std::cerr << "Failed to call empty_ecall (Error code: 0x" << std::hex << ret << ")" << std::endl;
-                sgx_destroy_enclave(global_eid);
-                return -1;
-            }
-
-            // Calculate timing
-            std::chrono::duration<double, std::milli> total_duration = end_time - start_time;
-            uint64_t total_cycles = end_cycles - start_cycles;
-
-            // Store results
-            total_times.push_back(total_duration.count());
-
-            std::cout << "Iteration " << (i+1) << ":" << std::endl;
-            std::cout << "  Total time (with context switch): " << total_duration.count() << " ms" << std::endl;
-            std::cout << "  Total cycles: " << total_cycles << std::endl;
-
-            // Sleep briefly between iterations
-            usleep(1000);
+        // Run the specified test
+        if (test_type == "ecall") {
+            test_empty_ecall(iterations);
+        } else if (test_type == "ocall") {
+            test_empty_ocall(iterations);
+        } else if (test_type == "fileread") {
+            test_file_read_ecall(filename.c_str(), iterations);
+        } else if (test_type == "pingpong") {
+            test_ping_pong(iterations);
+        } else if (test_type == "init") {
+            test_init_only();
+        } else {
+            std::cerr << "Error: Unknown test type '" << test_type << "'" << std::endl;
+            print_usage(argv[0]);
+            sgx_destroy_enclave(global_eid);
+            return 1;
         }
-
-        // Calculate and display statistics for empty_ecall
-        double total_time_sum = 0.0;
-        double min_total_time = total_times[0];
-        double max_total_time = total_times[0];
-
-        for (double time : total_times) {
-            total_time_sum += time;
-            min_total_time = std::min(min_total_time, time);
-            max_total_time = std::max(max_total_time, time);
-        }
-
-        double avg_total_time = total_time_sum / NUM_ITERATIONS;
-
-        std::cout << "\nEmpty ECALL Timing Results:" << std::endl;
-        std::cout << "  Average total execution time: " << avg_total_time << " ms" << std::endl;
-        std::cout << "  Minimum total execution time: " << min_total_time << " ms" << std::endl;
-        std::cout << "  Maximum total execution time: " << max_total_time << " ms" << std::endl;
-
-        // Now measure context switch time specifically
-        measure_context_switch_time(NUM_ITERATIONS);
-
-        // Measure multiple back-to-back ECALLs to see overhead pattern
-        std::cout << "\nMeasuring multiple back-to-back ECALLs..." << std::endl;
-        const int MULTI_CALLS = 100;
-
-        auto multi_start = std::chrono::high_resolution_clock::now();
-
-        for (int i = 0; i < MULTI_CALLS; i++) {
-            sgx_status_t ret = empty_ecall(global_eid, i % 50); // Vary the parameter slightly
-
-            if (ret != SGX_SUCCESS) {
-                std::cerr << "Failed in multi-call test (Error code: 0x" << std::hex << ret << ")" << std::endl;
-                sgx_destroy_enclave(global_eid);
-                return -1;
-            }
-        }
-
-        auto multi_end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> multi_duration = multi_end - multi_start;
-
-        std::cout << "  " << MULTI_CALLS << " back-to-back ECALLs took: " << multi_duration.count() << " ms" << std::endl;
-        std::cout << "  Average time per ECALL: " << (multi_duration.count() / MULTI_CALLS) << " ms" << std::endl;
-
-        const char* test_filename = "test_file.txt";
-
-        // Test the file read ecall
-        test_file_read_ecall(test_filename, NUM_ITERATIONS);
-        // Test the repeated file read ecall
-        test_repeated_file_read_ecall(test_filename, 100, NUM_ITERATIONS);
 
 
         /* Destroy the enclave */
@@ -554,3 +360,4 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 }
+

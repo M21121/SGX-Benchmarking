@@ -14,6 +14,7 @@ enclave_u.*
 
 # Generated files
 *.txt
+*.csv
 *.pem
 
 # Temporary files
