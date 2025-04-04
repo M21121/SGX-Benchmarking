@@ -5,7 +5,7 @@
 
 # Set the number of iterations
 ITERATIONS=100000
-FILE_ITERATIONS=1000  # Fewer iterations for file operations as they're slower
+FILE_ITERATIONS=100000  # Fewer iterations for file operations as they're slower
 FILE_SIZE_1=1         # Size in KB for the first test file
 FILE_SIZE_2=100       # Size in KB for the second test file
 
@@ -118,7 +118,7 @@ file1=$(create_test_file $FILE_SIZE_1)
 file2=$(create_test_file $FILE_SIZE_2)
 
 # Run basic benchmarks
-run_benchmark "init" "Enclave Initialization Only" 100
+run_benchmark "init" "Enclave Initialization Only"  $ITERATIONS
 run_benchmark "ecall" "Empty ECALL"
 run_benchmark "ocall" "Empty OCALL"
 run_benchmark "pingpong" "Ping-Pong (ECALL-OCALL round-trip)"
