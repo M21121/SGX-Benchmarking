@@ -1,10 +1,7 @@
-### Important
-I did not include results because the numbers are obviously incorrect (meaning I have bugs to fix).
-
 ### File Reading
 This version implements two file read versions:
-1) ocall_file_read - host just passes file directly to the enclave
-2) sgx_fread - uses SGX protected FS, meaning the files stay encrypted from the host.
+1) ocall_file_read - Host passes file directly to the enclave (naive).
+2) sgx_fread - Uses SGX protected FS to always keep files encrypted from the host.
 
 ### Side-Channel Mitigations
 This version has two makefiles. The second _removes_ the following side-channel mitigations:
@@ -23,6 +20,8 @@ This version has two makefiles. The second _removes_ the following side-channel 
 - Memory barriers: Explicit memory fence instructions were removed, exposing to cache timing side-channel attacks
 - Constant-time operations: Time-invariant code patterns were disabled, making cryptographic operations vulnerable to timing analysis
 
+## Important
+I did not include results because the numbers are obviously incorrect, meaning I have bugs to fix somewhere. Part of it comes from trying to prevent caching. Also, the secure reading seems to not like the way I disabled hyperthreading.
 
 ### Next steps:
 - Fix bugs to get accurate timing.
