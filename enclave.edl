@@ -5,7 +5,9 @@ enclave {
     trusted {
         public void empty_ecall(int n);
         public void file_read_ecall([in, string] const char* filename);
+        public void secure_file_read_ecall([in, string] const char* filename);
         public void ping_ecall(int iteration_number);
+        public void direct_file_read_ecall([in, string] const char* filename);
     };
 
     untrusted {
@@ -13,5 +15,33 @@ enclave {
         void ocall_print_string([in, string] const char* str);
         size_t ocall_read_file([in, string] const char* filename, [out, size=buf_len] char* buf, size_t buf_len);
         void pong_ocall(int iteration_number);
+
+        /* SGX Protected FS required OCALLs */
+        uint32_t u_sgxprotectedfs_exclusive_file_map([in, string] const char* filename,
+                                                    uint8_t read_only,
+                                                    [out] void** file_addr,
+                                                    [out] uint64_t* file_size);
+        void u_sgxprotectedfs_file_unmap([user_check] void* file_addr, uint64_t file_size);
+        uint32_t u_sgxprotectedfs_file_remap([user_check] void* file_addr,
+                                            [out] void** new_file_addr);
+        uint32_t u_sgxprotectedfs_remove([in, string] const char* filename);
+        uint32_t u_sgxprotectedfs_check_if_file_exists([in, string] const char* filename);
+        uint32_t u_sgxprotectedfs_fwrite_recovery_file([in, string] const char* filename,
+                                                     [in, size=data_length] uint8_t* data,
+                                                     uint32_t data_length);
+        uint32_t u_sgxprotectedfs_do_file_recovery([in, string] const char* filename,
+                                                 [in, string] const char* recovery_filename,
+                                                 uint32_t node_size);
+
+        /* Thread synchronization OCALLs */
+        int sgx_thread_wait_untrusted_event_ocall([user_check] const void* self);
+        int sgx_thread_set_untrusted_event_ocall([user_check] const void* waiter);
+        int sgx_thread_setwait_untrusted_events_ocall([user_check] const void* waiter,
+                                                    [user_check] const void* self);
+        int sgx_thread_set_multiple_untrusted_events_ocall([in, count=total] const void** waiters,
+                                                        size_t total);
+         size_t ocall_read_file_direct([in, string] const char* filename,
+                                     [out, size=buf_len] char* buf,
+                                     size_t buf_len);
     };
 };

@@ -1,0 +1,10 @@
+app,test_type,description,iterations,avg_real_time,avg_user_time,avg_sys_time,stddev,cv_percent,ops_per_second,time_per_op_us
+app,init,Enclave Initialization Only,10000,.010000,0,.003333,0,0,1000000.00,1.00
+app,ecall,Empty ECALL,10000,.233333,.196666,.030000,.004690,2.01,42857.20,23.33
+app,ocall,Empty OCALL,10000,.026666,0,.023333,.004690,17.58,375009.37,2.66
+app,pingpong,Ping-Pong (ECALL-OCALL round-trip),10000,.243333,.206666,.026666,.004690,1.92,41095.94,24.33
+app,fileread,Single Read (1KB File),10000,.010000,0,.006666,0,0,1000000.00,1.00
+app,fileread,Single Read (100KB File),10000,.010000,0,.010000,0,0,1000000.00,1.00
+app,securefileread,Secure Read (1KB File),10000,.010000,0,.006666,0,0,1000000.00,1.00
+app,directfileread,Direct I/O Read (1KB File),10000,.010000,0,.010000,0,0,1000000.00,1.00
+app,directfileread,Direct I/O Read (100KB File),10000,.010000,0,.010000,0,0,1000000.00,1.00

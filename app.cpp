@@ -13,6 +13,17 @@
 #include <fstream>
 #include <vector>
 #include <getopt.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <fcntl.h>      // For O_DIRECT
+#include <unistd.h>     // For read, close
+#include <sys/types.h>  // For open
+#include <sys/stat.h>   // For open
+#include <errno.h>      // For errno
+
 
 #include "sgx_urts.h"
 #include "enclave_u.h"
@@ -237,12 +248,238 @@ void test_file_read_ecall(const char* filename, int iterations) {
     std::cout << "Completed " << iterations << " file_read_ecall operations" << std::endl;
 }
 
+uint32_t u_sgxprotectedfs_exclusive_file_map(const char* filename, uint8_t read_only, void** file_addr, uint64_t* file_size) {
+    int fd = -1;
+    void* addr = NULL;
+    struct stat st;
+
+    if (filename == NULL || file_addr == NULL || file_size == NULL)
+        return 1;
+
+    *file_addr = NULL;
+    *file_size = 0;
+
+    if (read_only)
+        fd = open(filename, O_RDONLY);
+    else
+        fd = open(filename, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+
+    if (fd == -1)
+        return 1;
+
+    if (fstat(fd, &st) == -1) {
+        close(fd);
+        return 1;
+    }
+
+    *file_size = st.st_size;
+
+    if (*file_size > 0) {
+        addr = mmap(NULL, *file_size, read_only ? PROT_READ : PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (addr == MAP_FAILED) {
+            close(fd);
+            return 1;
+        }
+    }
+
+    close(fd);
+    *file_addr = addr;
+    return 0;
+}
+
+void u_sgxprotectedfs_file_unmap(void* file_addr, uint64_t file_size) {
+    if (file_addr && file_size > 0)
+        munmap(file_addr, file_size);
+}
+
+uint32_t u_sgxprotectedfs_file_remap(void* file_addr, void** new_file_addr) {
+    if (file_addr == NULL || new_file_addr == NULL)
+        return 1;
+
+    *new_file_addr = file_addr; // In this simple implementation, we just return the same address
+    return 0;
+}
+
+uint32_t u_sgxprotectedfs_remove(const char* filename) {
+    if (filename == NULL)
+        return 1;
+
+    if (remove(filename) != 0)
+        return 1;
+
+    return 0;
+}
+
+uint32_t u_sgxprotectedfs_check_if_file_exists(const char* filename) {
+    if (filename == NULL)
+        return 1;
+
+    struct stat st;
+    if (stat(filename, &st) == 0)
+        return 0;
+
+    return 1;
+}
+
+uint32_t u_sgxprotectedfs_fwrite_recovery_file(const char* filename, uint8_t* data, uint32_t data_length) {
+    if (filename == NULL || data == NULL || data_length == 0)
+        return 1;
+
+    FILE* f = fopen(filename, "wb");
+    if (f == NULL)
+        return 1;
+
+    size_t written = fwrite(data, 1, data_length, f);
+    fclose(f);
+
+    if (written != data_length)
+        return 1;
+
+    return 0;
+}
+
+uint32_t u_sgxprotectedfs_do_file_recovery(const char* filename, const char* recovery_filename, uint32_t node_size) {
+    if (filename == NULL || recovery_filename == NULL || node_size == 0)
+        return 1;
+
+    // This is a simplified implementation
+    // In a real implementation, you would need to handle the recovery process
+
+    // For now, just check if both files exist
+    struct stat st;
+    if (stat(filename, &st) != 0 || stat(recovery_filename, &st) != 0)
+        return 1;
+
+    return 0;
+}
+
+// Thread synchronization OCALL implementations
+int sgx_thread_wait_untrusted_event_ocall(const void* self) {
+    if (self == NULL)
+        return -1;
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)self;
+    return pthread_mutex_lock(mutex);
+}
+
+int sgx_thread_set_untrusted_event_ocall(const void* waiter) {
+    if (waiter == NULL)
+        return -1;
+
+    pthread_mutex_t* mutex = (pthread_mutex_t*)waiter;
+    return pthread_mutex_unlock(mutex);
+}
+
+int sgx_thread_setwait_untrusted_events_ocall(const void* waiter, const void* self) {
+    if (waiter == NULL || self == NULL)
+        return -1;
+
+    pthread_mutex_t* waiter_mutex = (pthread_mutex_t*)waiter;
+    pthread_mutex_t* self_mutex = (pthread_mutex_t*)self;
+
+    int ret = pthread_mutex_unlock(waiter_mutex);
+    if (ret != 0)
+        return ret;
+
+    return pthread_mutex_lock(self_mutex);
+}
+
+int sgx_thread_set_multiple_untrusted_events_ocall(const void** waiters, size_t total) {
+    if (waiters == NULL || total == 0)
+        return -1;
+
+    for (size_t i = 0; i < total; i++) {
+        pthread_mutex_t* mutex = (pthread_mutex_t*)waiters[i];
+        int ret = pthread_mutex_unlock(mutex);
+        if (ret != 0)
+            return ret;
+    }
+
+    return 0;
+}
+
+// Add this function to app.cpp
+size_t ocall_read_file_direct(const char* filename, char* buf, size_t buf_len) {
+    size_t bytes_read = 0;
+    int fd;
+
+    // Open the file with O_DIRECT flag
+    fd = open(filename, O_RDONLY | O_DIRECT);
+    if (fd == -1) {
+        std::cerr << "Error: Could not open file " << filename << " with O_DIRECT (errno: "
+                  << errno << " - " << strerror(errno) << ")" << std::endl;
+
+        // Fall back to regular open if O_DIRECT fails
+        std::cerr << "Falling back to regular file open..." << std::endl;
+        fd = open(filename, O_RDONLY);
+        if (fd == -1) {
+            std::cerr << "Error: Could not open file " << filename << std::endl;
+            return 0;
+        }
+    }
+
+    // For O_DIRECT, the buffer must be aligned to a multiple of the block size
+    // (typically 512 bytes or 4KB)
+    void* aligned_buf = NULL;
+    const size_t alignment = 4096; // 4KB alignment
+
+    // Allocate aligned memory
+    if (posix_memalign(&aligned_buf, alignment, buf_len) != 0) {
+        std::cerr << "Error: Could not allocate aligned memory" << std::endl;
+        close(fd);
+        return 0;
+    }
+
+    // Read the file
+    bytes_read = read(fd, aligned_buf, buf_len - 1);
+    if (bytes_read == (size_t)-1) {
+        std::cerr << "Error: Could not read file " << filename
+                  << " (errno: " << errno << " - " << strerror(errno) << ")" << std::endl;
+        bytes_read = 0;
+    } else {
+        // Copy to the original buffer
+        memcpy(buf, aligned_buf, bytes_read);
+        buf[bytes_read] = '\0'; // Ensure null termination
+    }
+
+    // Free the aligned memory
+    free(aligned_buf);
+    close(fd);
+
+    return bytes_read;
+}
+
+void test_direct_file_read_ecall(const char* filename, int iterations) {
+    // First check if the file exists
+    FILE* test_file = fopen(filename, "r");
+    if (!test_file) {
+        std::cerr << "Error: File '" << filename << "' does not exist. Please create it before running this test." << std::endl;
+        return;
+    }
+    fclose(test_file);
+
+    std::cout << "\nTesting direct_file_read_ecall with file: " << filename << std::endl;
+    std::cout << "Performing " << iterations << " iterations" << std::endl;
+
+    for (int i = 0; i < iterations; i++) {
+        sgx_status_t ret = direct_file_read_ecall(global_eid, filename);
+
+        if (ret != SGX_SUCCESS) {
+            std::cerr << "Failed to call direct_file_read_ecall (Error code: 0x"
+                      << std::hex << ret << ")" << std::endl;
+            return;
+        }
+    }
+
+    std::cout << "Completed " << iterations << " direct_file_read_ecall operations" << std::endl;
+}
+
 
 void print_usage(const char* program_name) {
     std::cout << "Usage: " << program_name << " [options]" << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  -h, --help                 Show this help message" << std::endl;
-    std::cout << "  -t, --test TYPE            Test type (init, ecall, ocall, fileread, pingpong)" << std::endl;
+    std::cout << "  -t, --test TYPE            Test type (init, ecall, ocall, fileread, securefileread, pingpong)" << std::endl;
     std::cout << "  -i, --iterations N         Number of iterations to run (default: 1)" << std::endl;
     std::cout << "  -f, --file FILENAME        File to use for file operations (default: test_file.txt)" << std::endl;
     std::cout << std::endl;
@@ -250,7 +487,34 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " --test init                # Just initialize enclave and exit (control test)" << std::endl;
     std::cout << "  " << program_name << " --test ecall --iterations 1000" << std::endl;
     std::cout << "  " << program_name << " --test fileread --file data.txt --iterations 10" << std::endl;
+    std::cout << "  " << program_name << " --test securefileread --file data.txt --iterations 10" << std::endl;
     std::cout << "  " << program_name << " --test pingpong --iterations 10" << std::endl;
+}
+
+
+void test_secure_file_read_ecall(const char* filename, int iterations) {
+    // First check if the file exists
+    FILE* test_file = fopen(filename, "r");
+    if (!test_file) {
+        std::cerr << "Error: File '" << filename << "' does not exist. Please create it before running this test." << std::endl;
+        return;
+    }
+    fclose(test_file);
+
+    std::cout << "\nTesting secure_file_read_ecall with file: " << filename << std::endl;
+    std::cout << "Performing " << iterations << " iterations" << std::endl;
+
+    for (int i = 0; i < iterations; i++) {
+        sgx_status_t ret = secure_file_read_ecall(global_eid, filename);
+
+        if (ret != SGX_SUCCESS) {
+            std::cerr << "Failed to call secure_file_read_ecall (Error code: 0x"
+                      << std::hex << ret << ")" << std::endl;
+            return;
+        }
+    }
+
+    std::cout << "Completed " << iterations << " secure_file_read_ecall operations" << std::endl;
 }
 
 
@@ -331,6 +595,10 @@ int main(int argc, char* argv[]) {
             test_empty_ocall(iterations);
         } else if (test_type == "fileread") {
             test_file_read_ecall(filename.c_str(), iterations);
+        } else if (test_type == "securefileread") {
+            test_secure_file_read_ecall(filename.c_str(), iterations);
+        } else if (test_type == "directfileread") {
+            test_direct_file_read_ecall(filename.c_str(), iterations);
         } else if (test_type == "pingpong") {
             test_ping_pong(iterations);
         } else if (test_type == "init") {
@@ -341,7 +609,6 @@ int main(int argc, char* argv[]) {
             sgx_destroy_enclave(global_eid);
             return 1;
         }
-
 
         /* Destroy the enclave */
         std::cout << "\nDestroying enclave..." << std::endl;

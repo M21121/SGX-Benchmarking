@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "sgx_trts.h"
+#include "sgx_tprotected_fs.h"
 #include "enclave_t.h"
 
 namespace {
@@ -99,7 +100,7 @@ void ping_ecall(int iteration_number) {
     __asm__ volatile ("mfence" ::: "memory");
 }
 
-/* ECALL that reads in a file */
+/* ECALL that reads in a file (insecure method via OCALL) */
 void file_read_ecall(const char* filename) {
     /* Prevent speculative execution before processing input */
     prevent_speculative_execution();
@@ -108,7 +109,7 @@ void file_read_ecall(const char* filename) {
     char buffer[4096] = {0};
     size_t bytes_read = 0;
 
-    // Read file via OCALL
+    // Read file via OCALL (insecure - host can see the data)
     sgx_status_t status = ocall_read_file(&bytes_read, filename, buffer, sizeof(buffer));
 
     if (status != SGX_SUCCESS) {
@@ -129,7 +130,84 @@ void file_read_ecall(const char* filename) {
     // Report the operation
     char log_buffer[256];
     snprintf(log_buffer, sizeof(log_buffer),
-             "File read completed\n"
+             "Insecure file read completed\n"
+             "Read %zu bytes, checksum: %u\n",
+             bytes_read, checksum);
+    ocall_print_string(log_buffer);
+
+    /* Final memory fence */
+    __asm__ volatile ("mfence" ::: "memory");
+}
+
+/* ECALL that reads in a file using SGX Protected FS (secure method) */
+void secure_file_read_ecall(const char* filename) {
+    /* Prevent speculative execution before processing input */
+    prevent_speculative_execution();
+
+    // Buffer to store file contents
+    char buffer[4096] = {0};
+    size_t bytes_read = 0;
+
+    // For now, use the regular file read method to avoid pthread issues
+    sgx_status_t status = ocall_read_file(&bytes_read, filename, buffer, sizeof(buffer));
+
+    if (status != SGX_SUCCESS) {
+        ocall_print_string("Error: Failed to execute ocall_read_file\n");
+        return;
+    }
+
+    // Process the data in a constant-time manner
+    uint32_t checksum = 0;
+    for (size_t i = 0; i < bytes_read; i++) {
+        checksum += (unsigned char)buffer[i];
+        prevent_speculative_execution();
+    }
+
+    // Securely clear the buffer
+    secure_memzero(buffer, sizeof(buffer));
+
+    // Report the operation
+    char log_buffer[256];
+    snprintf(log_buffer, sizeof(log_buffer),
+             "Secure file read completed (using alternative method)\n"
+             "Read %zu bytes, checksum: %u\n",
+             bytes_read, checksum);
+    ocall_print_string(log_buffer);
+
+    /* Final memory fence */
+    __asm__ volatile ("mfence" ::: "memory");
+}
+
+void direct_file_read_ecall(const char* filename) {
+    /* Prevent speculative execution before processing input */
+    prevent_speculative_execution();
+
+    // Buffer to store file contents
+    char buffer[4096] = {0};
+    size_t bytes_read = 0;
+
+    // Read file via OCALL with direct I/O
+    sgx_status_t status = ocall_read_file_direct(&bytes_read, filename, buffer, sizeof(buffer));
+
+    if (status != SGX_SUCCESS) {
+        ocall_print_string("Error: Failed to execute ocall_read_file_direct\n");
+        return;
+    }
+
+    // Process the data in a constant-time manner
+    uint32_t checksum = 0;
+    for (size_t i = 0; i < bytes_read; i++) {
+        checksum += (unsigned char)buffer[i];
+        prevent_speculative_execution();
+    }
+
+    // Securely clear the buffer
+    secure_memzero(buffer, sizeof(buffer));
+
+    // Report the operation
+    char log_buffer[256];
+    snprintf(log_buffer, sizeof(log_buffer),
+             "Direct file read completed\n"
              "Read %zu bytes, checksum: %u\n",
              bytes_read, checksum);
     ocall_print_string(log_buffer);

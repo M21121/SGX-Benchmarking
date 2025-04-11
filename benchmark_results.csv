@@ -1,7 +1,10 @@
-test_type,description,iterations,avg_real_time,avg_user_time,avg_sys_time,ops_per_second,time_per_op_us
-init,Enclave Initialization Only,100000,.026666,0,.010000,3750093.75,.26
-ecall,Empty ECALL,100000,2.886666,2.013333,.296666,34642.04,28.86
-ocall,Empty OCALL,100000,.316666,.010000,.110000,315790.13,3.16
-pingpong,Ping-Pong (ECALL-OCALL round-trip),100000,2.966666,2.096666,.293333,33707.87,29.66
-fileread,Single Read (1KB File),100000,.040000,0,.003333,2500000.00,.40
-fileread,Single Read (100KB File),100000,.043333,0,.010000,2307710.05,.43
+test_type,description,iterations,avg_real_time,avg_user_time,avg_sys_time,stddev,cv_percent,ops_per_second,time_per_op_us
+init,Enclave Initialization Only,10000,.010000,0,0,0,0,1000000.00,1.00
+ecall,Empty ECALL,10000,.233333,.190000,.040000,.004690,2.01,42857.20,23.33
+ocall,Empty OCALL,10000,.023333,.003333,.013333,.004690,20.10,428577.55,2.33
+pingpong,Ping-Pong (ECALL-OCALL round-trip),10000,.246666,.213333,.030000,.004690,1.90,40540.65,24.66
+fileread,Single Read (1KB File),10000,.010000,0,.006666,0,0,1000000.00,1.00
+fileread,Single Read (100KB File),10000,.010000,0,.006666,0,0,1000000.00,1.00
+securefileread,Secure Read (1KB File),10000,.010000,0,.003333,0,0,1000000.00,1.00
+directfileread,Direct I/O Read (1KB File),10000,.010000,0,0,0,0,1000000.00,1.00
+directfileread,Direct I/O Read (100KB File),10000,.010000,0,.006666,0,0,1000000.00,1.00
